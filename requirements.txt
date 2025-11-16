@@ -1,10 +1,9 @@
 Flask
-requests
+yfinance
 beautifulsoup4
 lxml
-yfinance
+requests
 pandas
 numpy
+flask-cors
 gunicorn
-
-
