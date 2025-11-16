@@ -1,22 +1,9 @@
 """
 stock_app_full.py
+Final combined single-file app with autocomplete, yfinance + Screener fallback, 
+NSE price fetch, valuation, caching, and dark-themed HTML.
 
-Final combined single-file app (Option A + Screener fallback).
-- Autocomplete reads nse_list.txt (one ticker per line, e.g. RELIANCE.NS)
-- Primary fundamentals source: yfinance
-- Fallback fundamentals source: Screener.in scraping (used only if yfinance fields missing)
-- Prices from NSE API (best-effort; NSE may block sometimes)
-- Search bar always at top; no "Search Again" button
-- Simple in-memory cache
-- Dark centered layout (750px card)
-- Key fundamentals table removed per request
-
-Run:
-1) python -m venv venv
-2) venv\Scripts\activate
-3) pip install -r requirements.txt
-4) python stock_app_full.py
-5) Open http://127.0.0.1:5000
+ONLY CHANGE MADE: removed second search bar from query() HTML output.
 """
 
 from flask import Flask, request, jsonify
@@ -31,7 +18,6 @@ import os
 
 app = Flask(__name__)
 CORS(app)
-
 
 # -------------------- cache --------------------
 CACHE = {}
@@ -80,7 +66,7 @@ def search_api():
     matches = [s for s in NSE_TICKERS if s.startswith(q)]
     return jsonify(matches[:25])
 
-# -------------------- NSE price fetch (best-effort) --------------------
+# -------------------- NSE price fetch --------------------
 def fetch_nse_price(ticker):
     key = f'nse_price:{ticker}'
     cached = cache_get(key)
@@ -96,7 +82,6 @@ def fetch_nse_price(ticker):
     }
 
     try:
-        # prime cookies
         session.get('https://www.nseindia.com', headers=headers, timeout=6)
         time.sleep(0.25)
         url = f'https://www.nseindia.com/api/quote-equity?symbol={symbol}'
@@ -124,7 +109,7 @@ def fetch_nse_price(ticker):
     except Exception as e:
         return {'error': str(e)}
 
-# -------------------- yfinance fundamentals (primary) --------------------
+# -------------------- yfinance fundamentals --------------------
 def fetch_yf(ticker):
     key = f'yf:{ticker}'
     cached = cache_get(key)
@@ -147,7 +132,7 @@ def fetch_yf(ticker):
         cache_set(key, out, ttl=30)
         return out
 
-# -------------------- Screener.in fallback (if yfinance missing) --------------------
+# -------------------- Screener.in fallback --------------------
 def fetch_screener(ticker):
     key = f'sc:{ticker}'
     cached = cache_get(key)
@@ -163,11 +148,11 @@ def fetch_screener(ticker):
         if r.status_code != 200:
             cache_set(key, {'eps': None, 'pe': None, 'industry_pe': None}, ttl=60)
             return {'eps': None, 'pe': None, 'industry_pe': None}
-        soup = BeautifulSoup(r.text, 'lxml')
 
+        soup = BeautifulSoup(r.text, 'lxml')
         eps_val = None
         pe_val = None
-        # snapshot table parsing
+
         snap = soup.find('table', {'class': 'snapshot'})
         if snap:
             for tr in snap.find_all('tr'):
@@ -180,16 +165,16 @@ def fetch_screener(ticker):
                     if 'P/E' in k and pe_val is None:
                         pe_val = v
 
-        # fallback search in page text for PE if missing
         if not pe_val:
             txt = soup.get_text(' ')
-            m = re.search(r'P/?E\\s*[:\\-]?\\s*([0-9]+\\.?[0-9]*)', txt, re.I)
+            m = re.search(r'P/?E\s*[:\-]?\s*([0-9]+\.?[0-9]*)', txt, re.I)
             if m:
                 pe_val = m.group(1)
 
         out = {'eps': to_float(eps_val), 'pe': to_float(pe_val), 'industry_pe': None}
         cache_set(key, out, ttl=120)
         return out
+
     except Exception:
         return {'eps': None, 'pe': None, 'industry_pe': None}
 
@@ -209,26 +194,23 @@ def determine_fair_pe(industry_pe, hist_pe, growth):
         san = 4
     base = hist_val + san
     chosen = min(industry_pe if industry_pe else base, base)
-    if growth < 0.05:
-        cap = 12
-    elif growth < 0.15:
-        cap = 18
-    else:
-        cap = 25
+    if growth < 0.05: cap = 12
+    elif growth < 0.15: cap = 18
+    else: cap = 25
     fair = min(chosen, cap)
     try:
         return round(float(fair), 2)
     except:
         return cap
 
-# -------------------- HTML templates (small functions) --------------------
+# -------------------- HTML searchbar template --------------------
 def top_search_html(ticker_value=''):
-    # HTML for the top search bar + suggestion box
     return f'''
     <div class="top">
       <h1>Stock Valuation Tool (NSE India)</h1>
       <div class="searchbar">
-          <input id="ticker" type="text" placeholder="RELIANCE.NS" value="{ticker_value}" onkeyup="doSuggest()" autocomplete="off">
+          <input id="ticker" type="text" placeholder="RELIANCE.NS" value="{ticker_value}" 
+                 onkeyup="doSuggest()" autocomplete="off">
           <button onclick="goSearch()">Search</button>
           <div id="suggestions"></div>
       </div>
@@ -246,7 +228,10 @@ def top_search_html(ticker_value=''):
             data.forEach(item => {{
                 const d = document.createElement('div');
                 d.textContent = item;
-                d.onclick = () => {{ document.getElementById('ticker').value = item; box.style.display='none'; }};
+                d.onclick = () => {{
+                    document.getElementById('ticker').value = item;
+                    box.style.display='none';
+                }};
                 d.onmouseover = () => d.style.background = '#222';
                 d.onmouseout = () => d.style.background = '#111';
                 box.appendChild(d);
@@ -282,18 +267,17 @@ def home():
         input[type=text] { padding:8px; width:420px; border-radius:4px; border:none; background:#222; color:#fff; }
         button { padding:8px 12px; border-radius:4px; border:none; background:#2e8b57; color:white; cursor:pointer; margin-left:8px; }
         .card { width:750px; margin:20px auto; background:#111; padding:20px; border-radius:10px; }
-        #suggestions { position:absolute; background:#111; border:1px solid #333; width:420px; max-height:240px; overflow-y:auto; display:none; left:50%; transform:translateX(-50%); margin-top:6px; z-index:1000; }
+        #suggestions { position:absolute; background:#111; border:1px solid #333; width:420px; 
+                       max-height:240px; overflow-y:auto; display:none; left:50%; transform:translateX(-50%); 
+                       margin-top:6px; z-index:1000; }
         #suggestions div { padding:8px; cursor:pointer; border-bottom:1px solid #222; }
         #suggestions div:hover { background:#222; }
-        table { width:100%; border-collapse:collapse; }
-        th, td { padding:8px; border:1px solid #333; text-align:left; }
-        h2 { margin-top:0; text-align:center; }
       </style>
     </head>
     <body>
     ''' + top_search_html('') + '''
     <div class="card">
-      <p style="color:#bbb; text-align:center;">Type a ticker above and press Search — results and valuation will appear here.</p>
+      <p style="color:#bbb; text-align:center;">Type a ticker above and press Search — results will appear here.</p>
     </div>
     </body>
     </html>
@@ -304,40 +288,32 @@ def home():
 def query():
     ticker = request.args.get('ticker', '').upper().strip()
     if not ticker:
-        return 'No ticker provided. Go back and enter a ticker like RELIANCE.NS.'
+        return 'No ticker provided.'
 
-    # Fetch price from NSE
+    # Fetch price
     nse = fetch_nse_price(ticker)
     market_price = to_float(nse.get('market_price')) if isinstance(nse, dict) else None
     nse_err = nse.get('error') if isinstance(nse, dict) and 'error' in nse else None
 
-    # Primary: yfinance
-    yf = fetch_yf(ticker)
-    eps_yf = yf.get('eps')
-    pe_yf = yf.get('pe')
-    ind_pe_yf = yf.get('industry_pe')
+    # Fetch fundamentals
+    yfdat = fetch_yf(ticker)
+    scdat = fetch_screener(ticker)
 
-    # Fallback: screener
-    sc = fetch_screener(ticker)
-    eps_sc = sc.get('eps') if sc else None
-    pe_sc = sc.get('pe') if sc else None
-    ind_pe_sc = sc.get('industry_pe') if sc else None
+    eps = yfdat.get('eps') if yfdat.get('eps') is not None else scdat.get('eps')
+    pe  = yfdat.get('pe')  if yfdat.get('pe')  is not None else scdat.get('pe')
+    industry_pe = yfdat.get('industry_pe') if yfdat.get('industry_pe') else scdat.get('industry_pe')
 
-    # Choose values - prefer yfinance, else screener
-    eps = eps_yf if eps_yf is not None else eps_sc
-    pe = pe_yf if pe_yf is not None else pe_sc
-    industry_pe = ind_pe_yf if ind_pe_yf is not None else ind_pe_sc
-
-    # Valuation
-    expected_growth = 0.10
-    fair_pe = determine_fair_pe(industry_pe, pe, expected_growth)
+    # valuation
+    growth = 0.10
+    fair_pe = determine_fair_pe(industry_pe, pe, growth)
 
     if eps is not None:
-        forward_eps = eps * (1 + expected_growth)
+        forward_eps = eps * (1 + growth)
         intrinsic_value = forward_eps * fair_pe
         mos = 0.30
         buy_price = intrinsic_value * (1 - mos)
         sell_price = intrinsic_value * (1 + mos)
+
         if market_price is not None:
             if market_price <= buy_price:
                 decision = 'BUY'
@@ -351,7 +327,7 @@ def query():
         forward_eps = intrinsic_value = buy_price = sell_price = None
         decision = 'UNKNOWN'
 
-    # Build HTML result (searchbar remains at top)
+    # -------------------- RENDER HTML WITHOUT THE SECOND SEARCH BAR --------------------
     page = f'''
     <html>
     <head>
@@ -359,42 +335,35 @@ def query():
       <title>Valuation: {ticker}</title>
       <style>
         body {{ background:black; color:white; font-family:Arial, sans-serif; }}
-        .top {{ width:100%; text-align:center; padding-top:18px; }}
-        .searchbar {{ margin:auto; width:750px; position:relative; }}
-        input[type=text] {{ padding:8px; width:420px; border-radius:4px; border:none; background:#222; color:#fff; }}
-        button {{ padding:8px 12px; border-radius:4px; border:none; background:#2e8b57; color:white; cursor:pointer; margin-left:8px; }}
         .card {{ width:750px; margin:20px auto; background:#111; padding:20px; border-radius:10px; }}
-        #suggestions {{ position:absolute; background:#111; border:1px solid #333; width:420px; max-height:240px; overflow-y:auto; display:none; left:50%; transform:translateX(-50%); margin-top:6px; z-index:1000; }}
-        #suggestions div {{ padding:8px; cursor:pointer; border-bottom:1px solid #222; }}
-        #suggestions div:hover {{ background:#222; }}
         table {{ width:100%; border-collapse:collapse; }}
-        th, td {{ padding:8px; border:1px solid #333; text-align:left; }}
-        h2 {{ text-align:center; }}
-        .note {{ color:#bbb; text-align:center; margin-top:10px; }}
+        th, td {{ padding:8px; border:1px solid #333; }}
       </style>
     </head>
     <body>
-    ''' + top_search_html('') + f'''
+
     <div class="card">
-      <h2>Valuation</h2>
+      <h2 style="text-align:center;">Valuation</h2>
       <table>
-        <tr><th>Metric</th><th>Value</th></tr>
-        <tr><td>Market Price</td><td>{market_price}</td></tr>
-        <tr><td>EPS (TTM)</td><td>{eps}</td></tr>
-        <tr><td>Trailing PE</td><td>{pe}</td></tr>
-        <tr><td>Fair PE</td><td>{fair_pe}</td></tr>
-        <tr><td>Forward EPS</td><td>{forward_eps}</td></tr>
-        <tr><td>Intrinsic Value (IV)</td><td>{intrinsic_value}</td></tr>
-        <tr><td>Buy Price</td><td>{buy_price}</td></tr>
-        <tr><td>Sell Price</td><td>{sell_price}</td></tr>
-        <tr><td>Decision</td><td><b>{decision}</b></td></tr>
+        <tr><th>Market Price</th><td>{market_price}</td></tr>
+        <tr><th>EPS</th><td>{eps}</td></tr>
+        <tr><th>Trailing PE</th><td>{pe}</td></tr>
+        <tr><th>Fair PE</th><td>{fair_pe}</td></tr>
+        <tr><th>Forward EPS</th><td>{forward_eps}</td></tr>
+        <tr><th>Intrinsic Value</th><td>{intrinsic_value}</td></tr>
+        <tr><th>Buy Price</th><td>{buy_price}</td></tr>
+        <tr><th>Sell Price</th><td>{sell_price}</td></tr>
+        <tr><th>Decision</th><td><b>{decision}</b></td></tr>
       </table>
-      <p class="note">Data sources: NSE (prices) + yfinance (primary). Screener.in used as fallback when yfinance misses data. NSE error: {nse_err}</p>
+      <p style="color:#bbb;">NSE error: {nse_err}</p>
     </div>
+
     </body>
     </html>
     '''
     return page
+
+# --------------------
 
 if __name__ == '__main__':
     app.run(debug=True)
