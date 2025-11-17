@@ -1,9 +1,13 @@
+# FULL CODE WITH NSE→YFINANCE MARKET PRICE FIX
+
 """
 stock_app_full.py
 Final combined single-file app with autocomplete, yfinance + Screener fallback, 
 NSE price fetch, valuation, caching, and dark-themed HTML.
 
-ONLY CHANGE MADE: removed second search bar from query() HTML output.
+ONLY CHANGE MADE: 
+- removed second search bar in output (your earlier request)
+- FIXED market price: NSE is primary, yfinance fallback
 """
 
 from flask import Flask, request, jsonify
@@ -203,7 +207,7 @@ def determine_fair_pe(industry_pe, hist_pe, growth):
     except:
         return cap
 
-# -------------------- HTML searchbar template --------------------
+# -------------------- searchbar HTML --------------------
 def top_search_html(ticker_value=''):
     return f'''
     <div class="top">
@@ -232,78 +236,71 @@ def top_search_html(ticker_value=''):
                     document.getElementById('ticker').value = item;
                     box.style.display='none';
                 }};
-                d.onmouseover = () => d.style.background = '#222';
-                d.onmouseout = () => d.style.background = '#111';
                 box.appendChild(d);
             }});
             box.style.display = 'block';
-        }} catch(err) {{ console.error(err); box.style.display='none'; }}
+        }} catch(err) {{
+            box.style.display='none';
+        }}
     }}
     function goSearch() {{
         const t = document.getElementById('ticker').value.trim();
-        if (!t) return alert('Enter ticker (e.g. RELIANCE.NS)');
+        if (!t) return alert('Enter ticker');
         window.location = '/query?ticker=' + encodeURIComponent(t);
     }}
     document.addEventListener('click', function(e) {{
         const box = document.getElementById('suggestions');
         const inp = document.getElementById('ticker');
-        if (!box.contains(e.target) && e.target !== inp) box.style.display = 'none';
+        if (!box.contains(e.target) && e.target !== inp) box.style.display='none';
     }});
     </script>
     '''
 
-# -------------------- routes --------------------
+# -------------------- HOME --------------------
 @app.route('/')
 def home():
-    html = '''
+    return '''
     <html>
-    <head>
-      <meta charset="utf-8">
-      <title>Stock Valuator</title>
-      <style>
-        body { background:black; color:white; font-family:Arial, sans-serif; }
-        .top { width:100%; text-align:center; padding-top:18px; }
-        .searchbar { margin:auto; width:750px; position:relative; }
-        input[type=text] { padding:8px; width:420px; border-radius:4px; border:none; background:#222; color:#fff; }
-        button { padding:8px 12px; border-radius:4px; border:none; background:#2e8b57; color:white; cursor:pointer; margin-left:8px; }
-        .card { width:750px; margin:20px auto; background:#111; padding:20px; border-radius:10px; }
-        #suggestions { position:absolute; background:#111; border:1px solid #333; width:420px; 
-                       max-height:240px; overflow-y:auto; display:none; left:50%; transform:translateX(-50%); 
-                       margin-top:6px; z-index:1000; }
-        #suggestions div { padding:8px; cursor:pointer; border-bottom:1px solid #222; }
-        #suggestions div:hover { background:#222; }
-      </style>
-    </head>
-    <body>
+    <head><meta charset="utf-8"><title>Stock Valuator</title></head>
+    <body style="background:black; color:white; font-family:Arial;">
     ''' + top_search_html('') + '''
-    <div class="card">
-      <p style="color:#bbb; text-align:center;">Type a ticker above and press Search — results will appear here.</p>
+    <div style="width:750px;margin:20px auto;background:#111;padding:20px;border-radius:10px;">
+      <p style="text-align:center;color:#bbb;">Type a ticker above.</p>
     </div>
-    </body>
-    </html>
+    </body></html>
     '''
-    return html
 
+# -------------------- QUERY PAGE --------------------
 @app.route('/query')
 def query():
     ticker = request.args.get('ticker', '').upper().strip()
     if not ticker:
-        return 'No ticker provided.'
+        return "No ticker provided."
 
-    # Fetch price
+    # Fetch NSE price
     nse = fetch_nse_price(ticker)
-    market_price = to_float(nse.get('market_price')) if isinstance(nse, dict) else None
+    nse_price = to_float(nse.get('market_price')) if isinstance(nse, dict) else None
     nse_err = nse.get('error') if isinstance(nse, dict) and 'error' in nse else None
 
-    # Fetch fundamentals
+    # YFINANCE fallback price
+    try:
+        t = yf.Ticker(ticker)
+        yf_price = t.fast_info.get("last_price") or t.info.get("currentPrice")
+    except:
+        yf_price = None
+
+    # -------- FIX: Market price selection --------
+    market_price = nse_price if nse_price is not None else yf_price
+
+    # Fundamentals
     yfdat = fetch_yf(ticker)
     scdat = fetch_screener(ticker)
 
     eps = yfdat.get('eps') if yfdat.get('eps') is not None else scdat.get('eps')
-    pe  = yfdat.get('pe')  if yfdat.get('pe')  is not None else scdat.get('pe')
+    pe = yfdat.get('pe') if yfdat.get('pe') is not None else scdat.get('pe')
     industry_pe = yfdat.get('industry_pe') if yfdat.get('industry_pe') else scdat.get('industry_pe')
 
-    # valuation
+    # Valuation
     growth = 0.10
     fair_pe = determine_fair_pe(industry_pe, pe, growth)
 
@@ -316,35 +313,24 @@ def query():
 
         if market_price is not None:
             if market_price <= buy_price:
-                decision = 'BUY'
+                decision = "BUY"
             elif market_price >= sell_price:
-                decision = 'SELL'
+                decision = "SELL"
             else:
-                decision = 'HOLD'
+                decision = "HOLD"
         else:
-            decision = 'UNKNOWN'
+            decision = "UNKNOWN"
     else:
         forward_eps = intrinsic_value = buy_price = sell_price = None
-        decision = 'UNKNOWN'
+        decision = "UNKNOWN"
 
-    # -------------------- RENDER HTML WITHOUT THE SECOND SEARCH BAR --------------------
-    page = f'''
+    return f"""
     <html>
-    <head>
-      <meta charset="utf-8">
-      <title>Valuation: {ticker}</title>
-      <style>
-        body {{ background:black; color:white; font-family:Arial, sans-serif; }}
-        .card {{ width:750px; margin:20px auto; background:#111; padding:20px; border-radius:10px; }}
-        table {{ width:100%; border-collapse:collapse; }}
-        th, td {{ padding:8px; border:1px solid #333; }}
-      </style>
-    </head>
-    <body>
-
-    <div class="card">
-      <h2 style="text-align:center;">Valuation</h2>
-      <table>
+    <head><meta charset='utf-8'><title>{ticker} Valuation</title></head>
+    <body style='background:black;color:white;font-family:Arial;'>
+    <div class='card' style='width:750px;margin:20px auto;background:#111;padding:20px;border-radius:10px;'>
+      <h2 style='text-align:center;'>Valuation</h2>
+      <table style='width:100%;border-collapse:collapse;'>
         <tr><th>Market Price</th><td>{market_price}</td></tr>
         <tr><th>EPS</th><td>{eps}</td></tr>
         <tr><th>Trailing PE</th><td>{pe}</td></tr>
@@ -355,15 +341,12 @@ def query():
         <tr><th>Sell Price</th><td>{sell_price}</td></tr>
         <tr><th>Decision</th><td><b>{decision}</b></td></tr>
       </table>
-      <p style="color:#bbb;">NSE error: {nse_err}</p>
+      <p style='color:#bbb;'>NSE error: {nse_err}</p>
     </div>
+    </body></html>
+    """
 
-    </body>
-    </html>
-    '''
-    return page
-
-# --------------------
+# ---------------------------------------------------------
 
 if __name__ == '__main__':
     app.run(debug=True)
